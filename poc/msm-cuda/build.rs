@@ -115,7 +115,7 @@ fn main() {
         if let Some(include) = env::var_os("DEP_SPPARK_ROOT") {
             nvcc.include(include);
         }
-        nvcc.file("cuda/pippenger_inf.cu").compile("blst_cuda_msm");
+        nvcc.file("cuda/pippenger.cu").compile("blst_cuda_msm");
 
         println!("cargo:rustc-cfg=feature=\"cuda\"");
         println!("cargo:rerun-if-changed=cuda");

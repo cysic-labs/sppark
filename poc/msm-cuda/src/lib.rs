@@ -12,6 +12,8 @@ use ark_ec::AffineCurve;
 use ark_ff::PrimeField;
 use ark_std::Zero;
 use blst::*;
+use halo2_proofs::halo2curves::bn256;
+use halo2_proofs::halo2curves::group::Group;
 
 pub mod util;
 
@@ -43,34 +45,30 @@ pub fn multi_scalar_mult(
     ret
 }
 
-pub fn multi_scalar_mult_arkworks<G: AffineCurve>(
-    points: &[G],
-    scalars: &[<G::ScalarField as PrimeField>::BigInt],
-) -> G::Projective {
+pub fn multi_scalar_mult_halo2(
+    points: &[bn256::G1Affine],
+    scalars: &[[u8; 32]],
+) -> bn256::G1 {
     #[cfg_attr(feature = "quiet", allow(improper_ctypes))]
     extern "C" {
-        fn mult_pippenger_inf(
-            out: *mut G1Projective,
-            points_with_infinity: *const G1Affine,
+        fn mult_pippenger(
+            out: *mut blst_p1,
+            points: *const blst_p1_affine,
             npoints: usize,
-            scalars: *const Fr,
-            ffi_affine_sz: usize,
+            scalars: *const blst_scalar,
         ) -> sppark::Error;
     }
 
-    let npoints = points.len();
-    if npoints != scalars.len() {
-        panic!("length mismatch")
-    }
+    let mut ret = bn256::G1::identity();
 
-    let mut ret = G::Projective::zero();
+    let npoints = points.len();
+
     let err = unsafe {
-        mult_pippenger_inf(
+        mult_pippenger(
             &mut ret as *mut _ as *mut _,
             points.as_ptr() as *const _,
             npoints,
             scalars.as_ptr() as *const _,
-            std::mem::size_of::<G>(),
         )
     };
     if err.code != 0 {
@@ -79,6 +77,42 @@ pub fn multi_scalar_mult_arkworks<G: AffineCurve>(
 
     ret
 }
+// pub fn multi_scalar_mult_arkworks<G: AffineCurve>(
+//     points: &[G],
+//     scalars: &[<G::ScalarField as PrimeField>::BigInt],
+// ) -> G::Projective {
+//     #[cfg_attr(feature = "quiet", allow(improper_ctypes))]
+//     extern "C" {
+//         fn mult_pippenger_inf(
+//             out: *mut G1Projective,
+//             points_with_infinity: *const G1Affine,
+//             npoints: usize,
+//             scalars: *const Fr,
+//             ffi_affine_sz: usize,
+//         ) -> sppark::Error;
+//     }
+
+//     let npoints = points.len();
+//     if npoints != scalars.len() {
+//         panic!("length mismatch")
+//     }
+
+//     let mut ret = G::Projective::zero();
+//     let err = unsafe {
+//         mult_pippenger_inf(
+//             &mut ret as *mut _ as *mut _,
+//             points.as_ptr() as *const _,
+//             npoints,
+//             scalars.as_ptr() as *const _,
+//             std::mem::size_of::<G>(),
+//         )
+//     };
+//     if err.code != 0 {
+//         panic!("{}", String::from(err));
+//     }
+
+//     ret
+// }
 
 #[cfg(any(feature = "bls12_381", feature = "bls12_377"))]
 pub fn multi_scalar_mult_fp2_arkworks<G: AffineCurve>(
