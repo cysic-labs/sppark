@@ -12,6 +12,12 @@
 # include <ff/pasta.hpp>
 #elif defined(FEATURE_VESTA)
 # include <ff/pasta.hpp>
+#elif defined(FEATURE_BN254)
+# include <ff/alt_bn128.hpp>
+#elif defined(FEATURE_GOLDILOCKS)
+# include <ff/goldilocks.hpp>
+#elif defined(FEATURE_BABY_BEAR)
+# include <ff/baby_bear.hpp>
 #else
 # error "no FEATURE"
 #endif
@@ -21,10 +27,11 @@
 #ifndef __CUDA_ARCH__
 
 extern "C"
-RustError compute_ntt(size_t device_id, fr_t* inout, uint32_t lg_domain_size,
-                      NTT::InputOutputOrder ntt_order,
-                      NTT::Direction ntt_direction,
-                      NTT::Type ntt_type)
+RustError::by_value compute_ntt(size_t device_id,
+                                fr_t* inout, uint32_t lg_domain_size,
+                                NTT::InputOutputOrder ntt_order,
+                                NTT::Direction ntt_direction,
+                                NTT::Type ntt_type)
 {
     auto& gpu = select_gpu(device_id);
 

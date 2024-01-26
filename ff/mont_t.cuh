@@ -311,10 +311,10 @@ public:
         asm("}");
         return *this;
     }
-    friend inline mont_t cneg(mont_t a, bool flag)
+    static inline mont_t cneg(mont_t a, bool flag)
     {   return a.cneg(flag);   }
 #else
-    friend inline mont_t cneg(const mont_t& a, bool flag)
+    static inline mont_t cneg(const mont_t& a, bool flag)
     {
         size_t i;
         uint32_t tmp[n], is_zero = a[0];
@@ -335,6 +335,8 @@ public:
         asm("}");
         return ret;
     }
+    inline mont_t& cneg(bool flag)
+    {   return *this = cneg(*this, flag);   }
 #endif
     inline mont_t operator-() const
     {   return cneg(*this, true);   }
@@ -400,8 +402,29 @@ public:
     inline mont_t& sqr()
     {   return *this = wide_t{*this};   }
 
-    // simplified exponentiation, but mind the ^ operator's precedence!
-    inline mont_t& operator^=(unsigned p)
+    // raise to a variable power, variable in respect to threadIdx,
+    // but mind the ^ operator's precedence!
+    inline mont_t& operator^=(uint32_t p)
+    {
+        mont_t sqr = *this;
+        *this = csel(*this, one(), p&1);
+
+        #pragma unroll 1
+        while (p >>= 1) {
+            sqr.sqr();
+            if (p&1)
+                *this *= sqr;
+        }
+
+        return *this;
+    }
+    friend inline mont_t operator^(mont_t a, uint32_t p)
+    {   return a ^= p;   }
+    inline mont_t operator()(uint32_t p)
+    {   return *this^p;   }
+
+    // raise to a constant power, e.g. x^7, to be unrolled at compile time
+    inline mont_t& operator^=(int p)
     {
         if (p < 2)
             asm("trap;");
@@ -421,9 +444,9 @@ public:
         }
         return *this;
     }
-    friend inline mont_t operator^(mont_t a, unsigned p)
+    friend inline mont_t operator^(mont_t a, int p)
     {   return p == 2 ? (mont_t)wide_t{a} : a ^= p;   }
-    inline mont_t operator()(unsigned p)
+    inline mont_t operator()(int p)
     {   return *this^p;   }
     friend inline mont_t sqr(const mont_t& a)
     {   return a^2;   }
@@ -854,14 +877,14 @@ private:
             asm("@%brw mov.b32 %0, %1;" : "+r"(b.hi) : "r"(a.hi));
 
             /* exchange f0 and f1 if a_-b_ borrowed */
-            uint32_t tmp = fg0;
-            asm("@%brw mov.b32 %0, %1;" : "+r"(fg0) : "r"(fg1));
-            asm("@%brw mov.b32 %0, %1;" : "+r"(fg1) : "r"(tmp));
+            uint32_t fgx;
+            asm("selp.u32 %0, %1, %2, %brw;" : "=r"(fgx) : "r"(fg0), "r"(fg1));
+            asm("selp.u32 %0, %1, %0, %brw;" : "+r"(fg0) : "r"(fg1));
 
             /* subtract if a_ was odd */
-            asm("@%odd sub.u32 %0, %0, %1;" : "+r"(fg0) : "r"(fg1));
+            asm("@%odd sub.u32 %0, %0, %1;" : "+r"(fg0) : "r"(fgx));
 
-            fg1 <<= 1;
+            fg1 = fgx << 1;
             asm("shf.r.wrap.b32 %0, %1, %2, 1;" : "=r"(a.lo) : "r"(a_b.lo), "r"(a_b.hi));
             a.hi = a_b.hi >> 1;
 
@@ -895,24 +918,24 @@ private:
             asm("setp.ne.u32 %odd, %0, 0;" :: "r"(a&1));
 
             /* a_ -= b_ if a_ is odd */
-            asm("@%odd sub.cc.u32  %0, %1, %2;" : "+r"(a_b) : "r"(a), "r"(b));
-            asm("setp.gt.and.u32   %brw, %0, %1, %odd;" :: "r"(a_b), "r"(a));
+            asm("setp.lt.and.u32  %brw, %0, %1, %odd;" :: "r"(a), "r"(b));
+            asm("@%odd sub.u32 %0, %1, %2;" : "+r"(a_b) : "r"(a), "r"(b));
 
             /* negate a_-b_ if it borrowed */
-            asm("@%brw sub.u32 %0, %1, %2;"     : "+r"(a_b) : "r"(b), "r"(a));
+            asm("@%brw sub.u32 %0, %1, %2;" : "+r"(a_b) : "r"(b), "r"(a));
 
             /* b_=a_ if a_-b_ borrowed */
             asm("@%brw mov.b32 %0, %1;" : "+r"(b) : "r"(a));
 
             /* exchange f0 and f1 if a_-b_ borrowed */
-            uint32_t tmp = fg0;
-            asm("@%brw mov.b32 %0, %1;" : "+r"(fg0) : "r"(fg1));
-            asm("@%brw mov.b32 %0, %1;" : "+r"(fg1) : "r"(tmp));
+            uint32_t fgx;
+            asm("selp.u32 %0, %1, %2, %brw;" : "=r"(fgx) : "r"(fg0), "r"(fg1));
+            asm("selp.u32 %0, %1, %0, %brw;" : "+r"(fg0) : "r"(fg1));
 
             /* subtract if a_ was odd */
-            asm("@%odd sub.u32 %0, %0, %1;" : "+r"(fg0) : "r"(fg1));
+            asm("@%odd sub.u32 %0, %0, %1;" : "+r"(fg0) : "r"(fgx));
 
-            fg1 <<= 1;
+            fg1 = fgx << 1;
             a = a_b >> 1;
 
             asm("}");
@@ -1088,6 +1111,13 @@ public:
     {   return a * b.reciprocal();   }
     inline mont_t& operator/=(const mont_t& a)
     {   return *this *= a.reciprocal();   }
+
+    inline void shfl_bfly(uint32_t laneMask)
+    {
+        #pragma unroll
+        for (size_t i=0; i<n; i++)
+            even[i] = __shfl_xor_sync(0xFFFFFFFF, even[i], laneMask);
+    }
 };
 
 # undef inline

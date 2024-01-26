@@ -21,19 +21,18 @@ void _CT_NTT(const unsigned int radix, const unsigned int lg_domain_size,
 
     const index_t tid = threadIdx.x + blockDim.x * (index_t)blockIdx.x;
 
-    const index_t inp_ntt_size = (index_t)1 << stage;
-    const index_t out_ntt_size = (index_t)1 << (stage + iterations - 1);
+    const index_t out_mask = ((index_t)1 << (stage + iterations - 1)) - 1;
 #if 1
-    const index_t thread_ntt_pos = (tid & (out_ntt_size - 1)) >> (iterations - 1);
+    const index_t thread_ntt_pos = (tid & out_mask) >> (iterations - 1);
 #else
-    const index_t thread_ntt_pos = (tid >> (iterations - 1)) & (inp_ntt_size - 1);
+    const index_t inp_mask = ((index_t)1 << stage) - 1;
+    const index_t thread_ntt_pos = (tid >> (iterations - 1)) & inp_mask;
 #endif
 
     // rearrange |tid|'s bits
-    index_t idx0 = tid & ~(out_ntt_size - 1);
-    idx0 += (tid << stage) & (out_ntt_size - 1);
+    index_t idx0 = (tid & ~out_mask) | ((tid << stage) & out_mask);
     idx0 = idx0 * 2 + thread_ntt_pos;
-    index_t idx1 = idx0 + inp_ntt_size;
+    index_t idx1 = idx0 + ((index_t)1 << stage);
 
     fr_t r0 = d_inout[idx0];
     fr_t r1 = d_inout[idx1];
@@ -44,12 +43,11 @@ void _CT_NTT(const unsigned int radix, const unsigned int lg_domain_size,
         unsigned int nbits = MAX_LG_DOMAIN_SIZE - stage;
 
         index_t root_idx0 = bit_rev(thread_ntt_idx, nbits) * thread_ntt_pos;
-        index_t root_idx1 = thread_ntt_pos << (nbits - 1);
+        index_t root_idx1 = root_idx0 + (thread_ntt_pos << (nbits - 1));
 
         fr_t first_root, second_root;
         get_intermediate_roots(first_root, second_root,
                                root_idx0, root_idx1, d_partial_twiddles);
-        second_root *= first_root;
 
         r0 *= first_root;
         r1 *= second_root;
@@ -82,15 +80,10 @@ void _CT_NTT(const unsigned int radix, const unsigned int lg_domain_size,
 
 #ifdef __CUDA_ARCH__
         fr_t x = fr_t::csel(r1, r0, pos);
-        shfl_bfly(x, laneMask);
+        x.shfl_bfly(laneMask);
         r0 = fr_t::csel(x, r0, !pos);
         r1 = fr_t::csel(x, r1, pos);
 #endif
-        if (pos)
-            swap(idx0, idx1);
-        shfl_bfly(idx0, laneMask);
-        if (pos)
-            swap(idx0, idx1);
 
         fr_t t = d_radix6_twiddles[rank << (6 - (s + 1))];
         t *= r1;
@@ -109,7 +102,6 @@ void _CT_NTT(const unsigned int radix, const unsigned int lg_domain_size,
 
         // shfl_bfly through the shared memory
         extern __shared__ fr_t shared_exchange[];
-        extern __shared__ index_t shared_exchange_idx[];
 
 #ifdef __CUDA_ARCH__
         fr_t x = fr_t::csel(r1, r0, pos);
@@ -120,14 +112,6 @@ void _CT_NTT(const unsigned int radix, const unsigned int lg_domain_size,
         r0 = fr_t::csel(x, r0, !pos);
         r1 = fr_t::csel(x, r1, pos);
 #endif
-        if (pos)
-            swap(idx0, idx1);
-        __syncthreads();
-        shared_exchange_idx[threadIdx.x] = idx0;
-        __syncthreads();
-        idx0 = shared_exchange_idx[threadIdx.x ^ laneMask];
-        if (pos)
-            swap(idx0, idx1);
 
         t *= r1;
 
@@ -139,6 +123,15 @@ void _CT_NTT(const unsigned int radix, const unsigned int lg_domain_size,
         r0 *= d_domain_size_inverse;
         r1 *= d_domain_size_inverse;
     }
+
+    // rotate "iterations" bits in indices
+    index_t mask = (index_t)((1 << iterations) - 1) << stage;
+    index_t rotw = idx0 & mask;
+    rotw = (rotw >> 1) | (rotw << (iterations - 1));
+    idx0 = (idx0 & ~mask) | (rotw & mask);
+    rotw = idx1 & mask;
+    rotw = (rotw >> 1) | (rotw << (iterations - 1));
+    idx1 = (idx1 & ~mask) | (rotw & mask);
 
     d_inout[idx0] = r0;
     d_inout[idx1] = r1;
